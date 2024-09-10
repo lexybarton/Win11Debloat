@@ -33,6 +33,7 @@ param (
     [switch]$ClearStart,
     [switch]$ClearStartAllUsers,
     [switch]$RevertContextMenu,
+    [switch]$HideHome,
     [switch]$HideGallery,
     [switch]$DisableOnedrive, [switch]$HideOnedrive,
     [switch]$Disable3dObjects, [switch]$Hide3dObjects,
@@ -358,7 +359,7 @@ function RemoveApps {
             # Remove installed app for all existing users
             if ($WinVersion -ge 22000){
                 # Windows 11 build 22000 or later
-                Get-AppxPackage -Name $app -AllUsers | Remove-AppxPackage -AllUsers
+                Get-AppxPackage -Name $app -AllUsers | Remove-AppxPackage -AllUsers -ErrorAction Continue
             }
             else {
                 # Windows 10
@@ -397,16 +398,13 @@ function ForceRemoveEdge {
 
         Write-Output "Removing leftover files..."
 
-        $appdata = $([Environment]::GetFolderPath('ApplicationData'))
-
         $edgePaths = @(
             "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Microsoft Edge.lnk",
             "$env:APPDATA\Microsoft\Internet Explorer\Quick Launch\Microsoft Edge.lnk",
             "$env:APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Microsoft Edge.lnk",
+            "$env:APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Tombstones\Microsoft Edge.lnk",
             "$env:PUBLIC\Desktop\Microsoft Edge.lnk",
             "$env:USERPROFILE\Desktop\Microsoft Edge.lnk",
-            "$appdata\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Tombstones\Microsoft Edge.lnk",
-            "$appdata\Microsoft\Internet Explorer\Quick Launch\Microsoft Edge.lnk",
             "$edgeStub"
         )
 
@@ -475,7 +473,9 @@ function RegImport {
         reg import "$PSScriptRoot\Regfiles\$path"  
     }
     else {
-        reg load "HKU\Default" "C:\Users\Default\NTUSER.DAT" | Out-Null
+        $defaultUserPath = $env:USERPROFILE.Replace($env:USERNAME, 'Default\NTUSER.DAT')
+        
+        reg load "HKU\Default" $defaultUserPath | Out-Null
         reg import "$PSScriptRoot\Regfiles\Sysprep\$path"  
         reg unload "HKU\Default" | Out-Null
     }
@@ -517,7 +517,8 @@ function ReplaceStartMenuForAllUsers {
     }
 
     # Get path to start menu file for all users
-    $usersStartMenuPaths = get-childitem -path "C:\Users\*\AppData\Local\Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState"
+    $userPathString = $env:USERPROFILE.Replace($env:USERNAME, "*\AppData\Local\Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState")
+    $usersStartMenuPaths = get-childitem -path $userPathString
 
     # Go through all users and replace the start menu file
     ForEach ($startMenuPath in $usersStartMenuPaths) {
@@ -525,16 +526,16 @@ function ReplaceStartMenuForAllUsers {
     }
 
     # Also replace the start menu file for the default user profile
-    $defaultProfile = "C:\Users\default\AppData\Local\Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState"
+    $defaultStartMenuPath = $env:USERPROFILE.Replace($env:USERNAME, 'Default\AppData\Local\Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState')
 
     # Create folder if it doesn't exist
-    if (-not(Test-Path $defaultProfile)) {
-        new-item $defaultProfile -ItemType Directory -Force | Out-Null
-        Write-Output "Created LocalState folder for default user"
+    if (-not(Test-Path $defaultStartMenuPath)) {
+        new-item $defaultStartMenuPath -ItemType Directory -Force | Out-Null
+        Write-Output "Created LocalState folder for default user profile"
     }
 
     # Copy template to default profile
-    Copy-Item -Path $startMenuTemplate -Destination $defaultProfile -Force
+    Copy-Item -Path $startMenuTemplate -Destination $defaultStartMenuPath -Force
     Write-Output "Replaced start menu for the default user profile"
     Write-Output ""
 }
@@ -544,7 +545,7 @@ function ReplaceStartMenuForAllUsers {
 # Credit: https://lazyadmin.nl/win-11/customize-windows-11-start-menu-layout/
 function ReplaceStartMenu {
     param (
-        $startMenuBinFile = "C:\Users\$([Environment]::UserName)\AppData\Local\Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState\start2.bin",
+        $startMenuBinFile = "$env:LOCALAPPDATA\Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState\start2.bin",
         $startMenuTemplate = "$PSScriptRoot/Start/start2.bin"
     )
 
@@ -698,9 +699,11 @@ else {
 }
 
 if ($global:Params.ContainsKey("Sysprep")) {
+    $defaultUserPath = $env:USERPROFILE.Replace($env:USERNAME, 'Default\NTUSER.DAT')
+
     # Exit script if default user directory or NTUSER.DAT file cannot be found
-    if (-not (Test-Path "C:\Users\Default\NTUSER.DAT")) {
-        Write-Host "Error: Unable to start Win11Debloat in Sysprep mode, cannot find default user folder at 'C:\Users\Default\'" -ForegroundColor Red
+    if (-not (Test-Path "$defaultUserPath")) {
+        Write-Host "Error: Unable to start Win11Debloat in Sysprep mode, cannot find default user folder at '$defaultUserPath'" -ForegroundColor Red
         AwaitKeyToExit
         Exit
     }
@@ -884,7 +887,7 @@ if ((-not $global:Params.Count) -or $RunDefaults -or $RunWin11Defaults -or ($SPP
                     Do {
                         Write-Host "Options:" -ForegroundColor Yellow
                         Write-Host " (n) Don't remove any pinned apps from the start menu" -ForegroundColor Yellow
-                        Write-Host " (1) Remove all pinned apps from the start menu for this user only ($([Environment]::UserName))" -ForegroundColor Yellow
+                        Write-Host " (1) Remove all pinned apps from the start menu for this user only ($env:USERNAME)" -ForegroundColor Yellow
                         Write-Host " (2) Remove all pinned apps from the start menu for all existing and new users"  -ForegroundColor Yellow
                         $ClearStartInput = Read-Host "Remove all pinned apps from the start menu? (n/1/2)" 
                     }
@@ -925,8 +928,8 @@ if ((-not $global:Params.Count) -or $RunDefaults -or $RunWin11Defaults -or ($SPP
             if ($WinVersion -ge 22621){
                 Write-Output ""
 
-                if ($( Read-Host -Prompt "Disable Windows Copilot? This applies to all users (y/n)" ) -eq 'y') {
-                    AddParameter 'DisableCopilot' 'Disable Windows copilot'
+                if ($( Read-Host -Prompt "Disable and remove Windows Copilot? This applies to all users (y/n)" ) -eq 'y') {
+                    AddParameter 'DisableCopilot' 'Disable and remove Windows Copilot'
                 }
 
                 Write-Output ""
@@ -1027,8 +1030,14 @@ if ((-not $global:Params.Count) -or $RunDefaults -or $RunWin11Defaults -or ($SPP
                 if ($WinVersion -ge 22000){
                     Write-Output ""
 
-                    if ($( Read-Host -Prompt "   Hide the gallery section from the File Explorer sidepanel? (y/n)" ) -eq 'y') {
-                        AddParameter 'HideGallery' 'Hide the gallery section from the File Explorer sidepanel'
+                    if ($( Read-Host -Prompt "   Hide the Home section from the File Explorer sidepanel? (y/n)" ) -eq 'y') {
+                        AddParameter 'HideHome' 'Hide the Home section from the File Explorer sidepanel'
+                    }
+
+                    Write-Output ""
+
+                    if ($( Read-Host -Prompt "   Hide the Gallery section from the File Explorer sidepanel? (y/n)" ) -eq 'y') {
+                        AddParameter 'HideGallery' 'Hide the Gallery section from the File Explorer sidepanel'
                     }
                 }
 
@@ -1045,8 +1054,8 @@ if ((-not $global:Params.Count) -or $RunDefaults -or $RunWin11Defaults -or ($SPP
                     if ($( Read-Host -Prompt "Do you want to hide any folders from the File Explorer sidepanel? (y/n)" ) -eq 'y') {
                         Write-Output ""
 
-                        if ($( Read-Host -Prompt "   Hide the onedrive folder from the File Explorer sidepanel? (y/n)" ) -eq 'y') {
-                            AddParameter 'HideOnedrive' 'Hide the onedrive folder in the File Explorer sidepanel'
+                        if ($( Read-Host -Prompt "   Hide the OneDrive folder from the File Explorer sidepanel? (y/n)" ) -eq 'y') {
+                            AddParameter 'HideOnedrive' 'Hide the OneDrive folder in the File Explorer sidepanel'
                         }
 
                         Write-Output ""
@@ -1238,7 +1247,7 @@ else {
             continue
         }
         'ClearStart' {
-            Write-Output "> Removing all pinned apps from the start menu for user $([Environment]::UserName)..."
+            Write-Output "> Removing all pinned apps from the start menu for user $env:USERNAME..."
             ReplaceStartMenu
             Write-Output ""
             continue
@@ -1297,7 +1306,11 @@ else {
             continue
         }
         'DisableCopilot' {
-            RegImport "> Disabling Windows copilot..." "Disable_Copilot.reg"
+            RegImport "> Disabling & removing Windows Copilot..." "Disable_Copilot.reg"
+
+            # Also remove the app package for bing search
+            $appsList = 'Microsoft.Copilot'
+            RemoveApps $appsList
             continue
         }
         'DisableRecall' {
@@ -1320,6 +1333,10 @@ else {
             RegImport "> Enabling file extensions for known file types..." "Show_Extensions_For_Known_File_Types.reg"
             continue
         }
+        'HideHome' {
+            RegImport "> Hiding the home section from the File Explorer navigation pane..." "Hide_Home_from_Explorer.reg"
+            continue
+        }
         'HideGallery' {
             RegImport "> Hiding the gallery section from the File Explorer navigation pane..." "Hide_Gallery_from_Explorer.reg"
             continue
@@ -1329,7 +1346,7 @@ else {
             continue
         }
         {$_ -in "HideOnedrive", "DisableOnedrive"} {
-            RegImport "> Hiding the onedrive folder from the File Explorer navigation pane..." "Hide_Onedrive_Folder.reg"
+            RegImport "> Hiding the OneDrive folder from the File Explorer navigation pane..." "Hide_Onedrive_Folder.reg"
             continue
         }
         {$_ -in "Hide3dObjects", "Disable3dObjects"} {
